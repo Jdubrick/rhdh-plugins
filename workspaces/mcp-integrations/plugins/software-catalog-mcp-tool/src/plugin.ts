@@ -24,6 +24,28 @@ import {
 } from '@backstage/plugin-catalog-node';
 import { actionsRegistryServiceRef } from '@backstage/backend-plugin-api/alpha';
 import { Entity } from '@backstage/catalog-model';
+import { CatalogClient } from '@backstage/catalog-client';
+import { createPermission } from '@backstage/plugin-permission-common';
+import { AuthorizeResult } from '@backstage/plugin-permission-common';
+
+/**
+ * Permission for fetching catalog entities via MCP tool
+ * @public
+ */
+export const catalogMcpFetchPermission = createPermission({
+  name: 'catalog.mcp.fetch',
+  attributes: { action: 'read' },
+});
+
+/**
+ * Permission for deleting catalog entities via MCP tool
+ * @public
+ */
+export const catalogMcpDeletePermission = createPermission({
+  name: 'catalog.mcp.delete',
+  attributes: { action: 'delete' },
+});
+
 /**
  * backstageMcpPlugin backend plugin
  *
@@ -40,9 +62,18 @@ export const backstageMcpPlugin = createBackendPlugin({
         httpRouter: coreServices.httpRouter,
         catalog: catalogServiceRef,
         auth: coreServices.auth,
+        permissions: coreServices.permissions,
+        discovery: coreServices.discovery,
       },
       // Sample action used in the Backstage docs: https://github.com/backstage/backstage/tree/master/plugins/mcp-actions-backend
-      async init({ actionsRegistry, catalog, auth, logger }) {
+      async init({
+        actionsRegistry,
+        catalog,
+        auth,
+        logger,
+        permissions,
+        discovery,
+      }) {
         // This action is used to fetch the list of catalog entities from Backstage. It returns an array of entity names
         actionsRegistry.register({
           name: 'fetch-catalog-entities',
@@ -181,7 +212,36 @@ Example invocations and the output from those invocations:
                   .describe('Error message if validation fails'),
               }),
           },
-          action: async ({ input }) => {
+          action: async ({ input, credentials }) => {
+            // Check permissions - Note: In MCP actions, credentials come from the MCP server's authentication
+            // This requires the permission framework to be enabled and configured
+            if (credentials) {
+              try {
+                const decision = (
+                  await permissions.authorize(
+                    [{ permission: catalogMcpFetchPermission }],
+                    { credentials },
+                  )
+                )[0];
+
+                if (decision.result !== AuthorizeResult.ALLOW) {
+                  return {
+                    output: {
+                      entities: [],
+                      error:
+                        'Permission denied: You do not have permission to fetch catalog entities',
+                    },
+                  };
+                }
+              } catch (error) {
+                logger.warn(
+                  'Permission check failed, allowing by default:',
+                  error,
+                );
+                // If permissions are not configured, allow by default for backwards compatibility
+              }
+            }
+
             // Validate that type is only used with kind -- we could just allow `type` to be specified without `kind` but given types are per kind it made sense to restrict it
             // The Backstage MCP server will return a 500 error if we throw a validation error (without saying why), so instead, let's return the error message in the output
             // TODO: Investigate potential upstream improvements to allow error messages to be returned to the client
@@ -216,6 +276,140 @@ Example invocations and the output from those invocations:
                 output: {
                   entities: [],
                   error: error.message,
+                },
+              };
+            }
+          },
+        });
+
+        // This action is used to delete catalog entities from Backstage
+        actionsRegistry.register({
+          name: 'delete-catalog-entity',
+          title: 'Delete Catalog Entity',
+          description: `Delete a catalog entity from the Backstage server by its entity reference.
+
+This action permanently removes an entity from the catalog. Use with caution.
+The entity reference should be in the format: [kind]:[namespace]/[name] (e.g., "Component:default/my-service")
+
+Example invocations:
+  # Delete a Component entity
+  delete-catalog-entity entityRef:Component:default/my-service
+  
+  # Delete a Resource entity
+  delete-catalog-entity entityRef:Resource:default/my-database
+
+Returns:
+  - success: true if the entity was deleted successfully
+  - message: A confirmation message
+  - error: An error message if the deletion failed
+`,
+          schema: {
+            input: z =>
+              z.object({
+                entityRef: z
+                  .string()
+                  .describe(
+                    'The entity reference in the format: [kind]:[namespace]/[name] (e.g., "Component:default/my-service")',
+                  ),
+              }),
+            output: z =>
+              z.object({
+                success: z
+                  .boolean()
+                  .describe('Whether the entity was deleted successfully'),
+                message: z
+                  .string()
+                  .optional()
+                  .describe('A message describing the result'),
+                error: z
+                  .string()
+                  .optional()
+                  .describe('Error message if the deletion failed'),
+              }),
+          },
+          action: async ({ input, credentials }) => {
+            // Check permissions - only users with delete permission can use this action
+            if (credentials) {
+              try {
+                const decision = (
+                  await permissions.authorize(
+                    [{ permission: catalogMcpDeletePermission }],
+                    { credentials },
+                  )
+                )[0];
+
+                if (decision.result !== AuthorizeResult.ALLOW) {
+                  return {
+                    output: {
+                      success: false,
+                      error:
+                        'Permission denied: You do not have permission to delete catalog entities. This action requires membership in the "write" group.',
+                    },
+                  };
+                }
+              } catch (error) {
+                logger.error(
+                  'Permission check failed for delete action:',
+                  error,
+                );
+                return {
+                  output: {
+                    success: false,
+                    error:
+                      'Permission check failed. Ensure the permission framework is properly configured.',
+                  },
+                };
+              }
+            } else {
+              logger.warn('No credentials provided for delete action');
+              return {
+                output: {
+                  success: false,
+                  error: 'Authentication required: No credentials provided',
+                },
+              };
+            }
+
+            try {
+              const { entityRef } = input;
+
+              logger.info(
+                `delete-catalog-entity: Attempting to delete entity: ${entityRef}`,
+              );
+
+              // Create a catalog client to delete the entity
+              const catalogClient = new CatalogClient({
+                discoveryApi: discovery,
+              });
+
+              // Get plugin credentials for API calls
+              const { token } = await auth.getPluginRequestToken({
+                onBehalfOf: credentials,
+                targetPluginId: 'catalog',
+              });
+
+              // Delete the entity by UID
+              await catalogClient.removeEntityByUid(entityRef, { token });
+
+              logger.info(
+                `delete-catalog-entity: Successfully deleted entity: ${entityRef}`,
+              );
+
+              return {
+                output: {
+                  success: true,
+                  message: `Successfully deleted entity: ${entityRef}`,
+                },
+              };
+            } catch (error) {
+              logger.error(
+                'delete-catalog-entity: Error deleting catalog entity:',
+                error,
+              );
+              return {
+                output: {
+                  success: false,
+                  error: `Failed to delete entity: ${error.message}`,
                 },
               };
             }

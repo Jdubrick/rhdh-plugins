@@ -35,11 +35,12 @@ backend:
     client: better-sqlite3
     connection: ':memory:'
   auth:
-    externalAccess:
-      - type: static
-        options:
-          token: ${MCP_TOKEN}
-          subject: mcp-clients
+    # Uncomment for static token auth (simpler, but less secure)
+    # externalAccess:
+    #   - type: static
+    #     options:
+    #       token: ${MCP_TOKEN}
+    #       subject: mcp-clients
   # workingDirectory: /tmp # Use this to configure a working directory for the scaffolder, defaults to the OS temp-dir
 
 integrations:
@@ -73,15 +74,50 @@ techdocs:
     type: 'local' # Alternatives - 'googleGcs' or 'awsS3'. Read documentation for using alternatives.
 
 auth:
+  environment: development
   # see https://backstage.io/docs/auth/ to learn about auth providers
+  session:
+    secret: "session-secret"
   providers:
-    # See https://backstage.io/docs/auth/guest/provider
-    guest: {}
+    oidc:
+      development:
+        clientId: "backstage"
+        clientSecret: "YCafdJfcMdIyrzCxGq5xozO3yHX6YoSZ" # local keycloak client secret not sensitive
+        metadataUrl: http://localhost:8080/realms/backstage-local/.well-known/openid-configuration
+        callbackUrl: http://localhost:7007/api/auth/oidc/handler/frame
+        prompt: auto
+        signIn:
+          resolvers:
+            - resolver: emailLocalPartMatchingUserEntityName
+  experimentalDynamicClientRegistration:
+    enabled: true
+    allowedRedirectUriPatterns:
+      - cursor://*
+      - http://localhost:3000/*
+      - http://localhost:8080/*
 
 scaffolder:
   # see https://backstage.io/docs/features/software-templates/configuration for software template options
 
 catalog:
+  providers:
+    keycloakOrg:
+      default:
+          baseUrl: "http://localhost:8080"
+          loginRealm: "backstage-local"
+          realm: "backstage-local"
+          clientId: "backstage"
+          clientSecret: "YCafdJfcMdIyrzCxGq5xozO3yHX6YoSZ" #keycloak client secret
+          schedule:
+            frequency:
+              minutes: 1
+            initialDelay:
+              seconds: 1
+            timeout:
+              minutes: 1
+            signIn:
+              resolvers:
+                - resolver: emailMatchingUserEntityProfileEmail
   import:
     entityFilename: catalog-info.yaml
     pullRequestBranchName: backstage-integration

@@ -26,8 +26,10 @@ backend.add(import('@backstage/plugin-techdocs-backend'));
 
 // auth plugin
 backend.add(import('@backstage/plugin-auth-backend'));
+
 // See https://backstage.io/docs/backend-system/building-backends/migrating#the-auth-plugin
 backend.add(import('@backstage/plugin-auth-backend-module-guest-provider'));
+backend.add(import('@backstage/plugin-auth-backend-module-oidc-provider'));
 // See https://backstage.io/docs/auth/guest/provider
 
 // catalog plugin
@@ -70,4 +72,9 @@ backend.add(
 backend.add(
   import('@red-hat-developer-hub/backstage-plugin-techdocs-mcp-tool'),
 );
+
+backend.add(
+  import('@backstage-community/plugin-catalog-backend-module-keycloak'),
+);
+
 backend.start();
