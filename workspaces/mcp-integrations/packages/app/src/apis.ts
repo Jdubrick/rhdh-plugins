@@ -41,6 +41,12 @@ export const keycloakOIDCAuthApiRef: ApiRef<
 
 export const apis: AnyApiFactory[] = [
   createApiFactory({
+    api: scmIntegrationsApiRef,
+    deps: { configApi: configApiRef },
+    factory: ({ configApi }) => ScmIntegrationsApi.fromConfig(configApi),
+  }),
+  ScmAuth.createDefaultApiFactory(),
+  createApiFactory({
     api: keycloakOIDCAuthApiRef,
     deps: {
       discoveryApi: discoveryApiRef,

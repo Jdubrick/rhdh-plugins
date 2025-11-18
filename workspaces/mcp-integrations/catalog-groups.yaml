@@ -1,0 +1,29 @@
+---
+apiVersion: backstage.io/v1alpha1
+kind: Group
+metadata:
+  name: backstage-write
+  namespace: default
+  description: Unified write access group - aggregates write permissions across all providers via catalog transformers
+  annotations:
+    backstage.io/managed-by: 'static-catalog'
+spec:
+  type: team
+  profile:
+    displayName: Backstage Write Access
+  children: []
+---
+apiVersion: backstage.io/v1alpha1
+kind: Group
+metadata:
+  name: backstage-read
+  namespace: default
+  description: Unified read-only access group - aggregates read permissions across all providers via catalog transformers
+  annotations:
+    backstage.io/managed-by: 'static-catalog'
+spec:
+  type: team
+  profile:
+    displayName: Backstage Read Access
+  children: []
+

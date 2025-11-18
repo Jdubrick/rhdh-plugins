@@ -1,0 +1,35 @@
+# Role-based permissions for catalog and MCP tools
+# Read role: can read catalog entities and use fetch MCP action
+p, role:default/read, catalog.entity.read, read, allow
+p, role:default/read, catalog.mcp.fetch, read, allow
+
+# Write role: can read, create, delete catalog entities and use all MCP actions
+p, role:default/write, catalog.entity.read, read, allow
+p, role:default/write, catalog.entity.create, create, allow
+p, role:default/write, catalog.entity.delete, delete, allow
+p, role:default/write, catalog.location.create, create, allow
+p, role:default/write, catalog.location.read, read, allow
+p, role:default/write, catalog.location.delete, delete, allow
+p, role:default/write, catalog.mcp.fetch, read, allow
+p, role:default/write, catalog.mcp.delete, delete, allow
+
+# MCP client permissions (for external MCP clients)
+p, role:default/mcp-client, catalog.entity.read, read, allow
+p, role:default/mcp-client, catalog.mcp.fetch, use, allow
+p, role:default/mcp-client, catalog.mcp.delete, use, allow
+
+# Map unified Backstage groups to roles
+# Users are automatically added as members of these unified groups by the catalog transformers
+# based on their provider-specific group membership
+g, group:default/backstage-read, role:default/read
+g, group:default/backstage-write, role:default/write
+
+# How it works:
+# 1. Catalog transformers modify user entities during ingestion
+# 2. Users from 'admins' or 'write' Keycloak groups → memberOf: backstage-write
+# 3. Users from 'read' Keycloak group → memberOf: backstage-read  
+# 4. Users from 'developers' GitHub team → memberOf: backstage-write
+# 5. RBAC evaluates permissions based on unified group membership
+
+# Map MCP client subject to role
+g, user:default/mcp-clients, role:default/mcp-client

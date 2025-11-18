@@ -46,9 +46,15 @@ backend:
 integrations:
   github:
     - host: github.com
+      apps:
+        - appId: 'redacted'
+          clientId: 'redacted'
+          clientSecret: 'redacted'
+          privateKey: 'redacted'
+          webhookSecret: 'redacted'
       # This is a Personal Access Token or PAT from GitHub. You can find out how to generate this token, and more information
       # about setting up the GitHub integration here: https://backstage.io/docs/integrations/github/locations#configuration
-      token: ${GITHUB_TOKEN}
+      # token: ${GITHUB_TOKEN}
     ### Example for how to add your GitHub Enterprise instance using the API:
     # - host: ghe.example.net
     #   apiBaseUrl: https://ghe.example.net/api/v3
@@ -89,6 +95,13 @@ auth:
         signIn:
           resolvers:
             - resolver: emailLocalPartMatchingUserEntityName
+    github:
+      development:
+        clientId: redacted # github app client id
+        clientSecret: redacted # github app client secret do NOT commit
+        signIn:
+          resolvers:
+            - resolver: usernameMatchingUserEntityName
   experimentalDynamicClientRegistration:
     enabled: true
     allowedRedirectUriPatterns:
@@ -107,7 +120,7 @@ catalog:
           loginRealm: "backstage-local"
           realm: "backstage-local"
           clientId: "backstage"
-          clientSecret: "YCafdJfcMdIyrzCxGq5xozO3yHX6YoSZ" #keycloak client secret
+          clientSecret: "YCafdJfcMdIyrzCxGq5xozO3yHX6YoSZ" #local keycloak client secret not sensitive
           schedule:
             frequency:
               minutes: 1
@@ -115,24 +128,35 @@ catalog:
               seconds: 1
             timeout:
               minutes: 1
-            signIn:
-              resolvers:
-                - resolver: emailMatchingUserEntityProfileEmail
+    githubOrg:
+      - id: development
+        githubUrl: https://github.com
+        orgs: ['jdubrick-ai']
+        schedule:
+          frequency:
+            minutes: 60
+          timeout:
+            minutes: 15
+          initialDelay:
+            seconds: 15
+    github:
+      providerId:
+        organization: 'jdubrick-ai'
   import:
     entityFilename: catalog-info.yaml
     pullRequestBranchName: backstage-integration
   rules:
-    - allow: [Location, Component, System, API, Group, User, Resource]
+    - allow: [Location, Component, System, API, Group, User, Resource, Template]
   locations:
     # Local example data, file locations are relative to the backend process, typically `packages/backend`
     - type: file
       target: ../../examples/entities.yaml
 
     # Local example template
-    - type: file
-      target: ../../examples/template/template.yaml
-      rules:
-        - allow: [Template]
+    # - type: file
+    #   target: ../../examples/templates/create-react-app/template.yaml
+    #   rules:
+    #     - allow: [Template]
 
     # Local example organizational data
     - type: file
@@ -140,10 +164,16 @@ catalog:
       rules:
         - allow: [User, Group]
 
-    - type: url
-      target: https://github.com/rhdh-demo-gh/ob-demo/blob/main/locations.yaml
+    # Static group definitions for unified permission groups
+    - type: file
+      target: ../../catalog-groups.yaml
       rules:
-        - allow: [Location, Component, System, API, Group, User, Resource]
+        - allow: [Group]
+
+    # - type: url
+    #   target: https://github.com/rhdh-demo-gh/ob-demo/blob/main/locations.yaml
+    #   rules:
+    #     - allow: [Location, Component, System, API, Group, User, Resource]
 
     ## Uncomment these lines to add more example data
     # - type: url
@@ -161,7 +191,20 @@ catalog:
 kubernetes:
   # see https://backstage.io/docs/features/kubernetes/configuration for kubernetes configuration options
 
+# RBAC configuration for the rbac-backend plugin
+rbac:
+  policies-csv-file: ../../rbac-policy.csv
+  
 # see https://backstage.io/docs/permissions/getting-started for more on the permission framework
 permission:
   # setting this to `false` will disable permissions
   enabled: true
+  rbac:
+    policies-csv-file: ../../rbac-policy.csv
+    authorizedUsers:
+      - group:default/admins
+    permissionedPlugins:
+      - 'software-catalog-mcp-tool'
+      - 'techdocs-mcp-tool'
+      - 'catalog'
+      - 'scaffolder'

@@ -22,6 +22,7 @@
   },
   "dependencies": {
     "@backstage-community/plugin-catalog-backend-module-keycloak": "^3.15.0",
+    "@backstage-community/plugin-rbac-backend": "^7.5.0",
     "@backstage/backend-defaults": "^0.11.0",
     "@backstage/backend-plugin-api": "^1.4.0",
     "@backstage/config": "^1.3.2",
@@ -32,6 +33,8 @@
     "@backstage/plugin-auth-backend-module-oidc-provider": "^0.4.8",
     "@backstage/plugin-auth-node": "^0.6.4",
     "@backstage/plugin-catalog-backend": "^2.1.0",
+    "@backstage/plugin-catalog-backend-module-github": "^0.11.1",
+    "@backstage/plugin-catalog-backend-module-github-org": "^0.3.15",
     "@backstage/plugin-catalog-backend-module-logs": "^0.1.11",
     "@backstage/plugin-catalog-backend-module-scaffolder-entity-model": "^0.2.9",
     "@backstage/plugin-kubernetes-backend": "^0.19.7",

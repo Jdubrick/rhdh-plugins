@@ -216,6 +216,19 @@ Example invocations and the output from those invocations:
             // Check permissions - Note: In MCP actions, credentials come from the MCP server's authentication
             // This requires the permission framework to be enabled and configured
             if (credentials) {
+              const principal = credentials.principal as any;
+              const principalStr = String(principal?.userEntityRef ?? principal ?? 'unknown');
+              
+              logger.info(
+                'fetch-catalog-entities: Checking permissions for user',
+                {
+                  principal: principalStr,
+                  ...(process.env.LOG_FULL_CREDENTIALS === 'true' && {
+                    credentials: JSON.stringify(credentials, null, 2),
+                  }),
+                },
+              );
+
               try {
                 const decision = (
                   await permissions.authorize(
@@ -224,7 +237,24 @@ Example invocations and the output from those invocations:
                   )
                 )[0];
 
+                logger.info(
+                  'fetch-catalog-entities: Permission authorization decision',
+                  {
+                    permission: catalogMcpFetchPermission.name,
+                    result: decision.result,
+                    principal: principalStr,
+                  },
+                );
+
                 if (decision.result !== AuthorizeResult.ALLOW) {
+                  logger.warn(
+                    'fetch-catalog-entities: Permission denied',
+                    {
+                      permission: catalogMcpFetchPermission.name,
+                      result: decision.result,
+                      principal: principalStr,
+                    },
+                  );
                   return {
                     output: {
                       entities: [],
@@ -233,13 +263,27 @@ Example invocations and the output from those invocations:
                     },
                   };
                 }
+
+                logger.info(
+                  'fetch-catalog-entities: Permission granted',
+                  {
+                    principal: principalStr,
+                  },
+                );
               } catch (error) {
                 logger.warn(
-                  'Permission check failed, allowing by default:',
-                  error,
+                  'fetch-catalog-entities: Permission check failed, allowing by default',
+                  {
+                    error: (error as Error).message,
+                    principal: principalStr,
+                  },
                 );
                 // If permissions are not configured, allow by default for backwards compatibility
               }
+            } else {
+              logger.info(
+                'fetch-catalog-entities: No credentials provided, proceeding without auth check',
+              );
             }
 
             // Validate that type is only used with kind -- we could just allow `type` to be specified without `kind` but given types are per kind it made sense to restrict it
@@ -330,6 +374,21 @@ Returns:
           action: async ({ input, credentials }) => {
             // Check permissions - only users with delete permission can use this action
             if (credentials) {
+              const principal = credentials.principal as any;
+              const principalStr = String(principal?.userEntityRef ?? principal ?? 'unknown');
+              
+              // Log credential information for debugging
+              logger.info(
+                'delete-catalog-entity: Checking permissions for user',
+                {
+                  principal: principalStr,
+                  // Only log these in debug scenarios - they may contain sensitive info
+                  ...(process.env.LOG_FULL_CREDENTIALS === 'true' && {
+                    credentials: JSON.stringify(credentials, null, 2),
+                  }),
+                },
+              );
+
               try {
                 const decision = (
                   await permissions.authorize(
@@ -338,7 +397,25 @@ Returns:
                   )
                 )[0];
 
+                // Log the authorization decision
+                logger.info(
+                  'delete-catalog-entity: Permission authorization decision',
+                  {
+                    permission: catalogMcpDeletePermission.name,
+                    result: decision.result,
+                    principal: principalStr,
+                  },
+                );
+
                 if (decision.result !== AuthorizeResult.ALLOW) {
+                  logger.warn(
+                    'delete-catalog-entity: Permission denied',
+                    {
+                      permission: catalogMcpDeletePermission.name,
+                      result: decision.result,
+                      principal: principalStr,
+                    },
+                  );
                   return {
                     output: {
                       success: false,
@@ -347,10 +424,22 @@ Returns:
                     },
                   };
                 }
+
+                logger.info(
+                  'delete-catalog-entity: Permission granted, proceeding with deletion',
+                  {
+                    principal: principalStr,
+                  },
+                );
               } catch (error) {
+                const err = error as Error;
                 logger.error(
-                  'Permission check failed for delete action:',
-                  error,
+                  'delete-catalog-entity: Permission check failed for delete action',
+                  {
+                    error: err.message,
+                    stack: err.stack,
+                    principal: principalStr,
+                  },
                 );
                 return {
                   output: {
@@ -361,7 +450,7 @@ Returns:
                 };
               }
             } else {
-              logger.warn('No credentials provided for delete action');
+              logger.warn('delete-catalog-entity: No credentials provided for delete action');
               return {
                 output: {
                   success: false,
@@ -388,11 +477,91 @@ Returns:
                 targetPluginId: 'catalog',
               });
 
-              // Delete the entity by UID
-              await catalogClient.removeEntityByUid(entityRef, { token });
+              // Parse the entity reference (format: kind:namespace/name)
+              // If only kind:name is provided, assume default namespace
+              const refParts = entityRef.split(':');
+              if (refParts.length !== 2) {
+                throw new Error(
+                  `Invalid entity reference format: ${entityRef}. Expected format: kind:namespace/name or kind:name`,
+                );
+              }
+
+              const kind = refParts[0];
+              const namePart = refParts[1];
+              const [namespace, name] = namePart.includes('/')
+                ? namePart.split('/')
+                : ['default', namePart];
 
               logger.info(
-                `delete-catalog-entity: Successfully deleted entity: ${entityRef}`,
+                `delete-catalog-entity: Parsed entity - kind: ${kind}, namespace: ${namespace}, name: ${name}`,
+              );
+
+              // Look up the entity to get its UID
+              const entity = await catalogClient.getEntityByRef(
+                { kind, namespace, name },
+                { token },
+              );
+
+              if (!entity) {
+                logger.warn(
+                  `delete-catalog-entity: Entity not found: ${entityRef}`,
+                );
+                return {
+                  output: {
+                    success: false,
+                    error: `Entity not found: ${entityRef}`,
+                  },
+                };
+              }
+
+              const uid = entity.metadata.uid;
+              if (!uid) {
+                logger.error(
+                  `delete-catalog-entity: Entity ${entityRef} has no UID`,
+                );
+                return {
+                  output: {
+                    success: false,
+                    error: `Entity ${entityRef} has no UID - cannot delete`,
+                  },
+                };
+              }
+
+              logger.info(
+                `delete-catalog-entity: Found entity UID: ${uid} for ${entityRef}`,
+              );
+
+              // For Location entities, use the location-specific deletion with location ID
+              if (kind.toLowerCase() === 'location') {
+                // For Location entities, get the Location object to obtain its ID
+                const location = await catalogClient.getLocationByEntity(
+                  { kind, namespace, name },
+                  { token }
+                );
+                
+                if (!location) {
+                  logger.error(
+                    `delete-catalog-entity: Location object not found for entity: ${entityRef}`,
+                  );
+                  return {
+                    output: {
+                      success: false,
+                      error: `Location object not found for entity: ${entityRef}`,
+                    },
+                  };
+                }
+                
+                logger.info(
+                  `delete-catalog-entity: Deleting Location using removeLocationById with ID: ${location.id}`,
+                );
+                await catalogClient.removeLocationById(location.id, { token });
+              } else {
+                // Delete regular entities using their UID
+                await catalogClient.removeEntityByUid(uid, { token });
+              }
+
+              logger.info(
+                `delete-catalog-entity: Successfully deleted entity: ${entityRef} (UID: ${uid})`,
               );
 
               return {
@@ -402,14 +571,19 @@ Returns:
                 },
               };
             } catch (error) {
+              const err = error as Error;
               logger.error(
-                'delete-catalog-entity: Error deleting catalog entity:',
-                error,
+                'delete-catalog-entity: Error deleting catalog entity',
+                {
+                  error: err.message,
+                  stack: err.stack,
+                  entityRef: input.entityRef,
+                },
               );
               return {
                 output: {
                   success: false,
-                  error: `Failed to delete entity: ${error.message}`,
+                  error: `Failed to delete entity: ${err.message}`,
                 },
               };
             }

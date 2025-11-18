@@ -30,7 +30,11 @@ backend.add(import('@backstage/plugin-auth-backend'));
 // See https://backstage.io/docs/backend-system/building-backends/migrating#the-auth-plugin
 backend.add(import('@backstage/plugin-auth-backend-module-guest-provider'));
 backend.add(import('@backstage/plugin-auth-backend-module-oidc-provider'));
+backend.add(import('@backstage/plugin-auth-backend-module-github-provider'));
 // See https://backstage.io/docs/auth/guest/provider
+
+// rbac
+backend.add(import('@backstage-community/plugin-rbac-backend'));
 
 // catalog plugin
 backend.add(import('@backstage/plugin-catalog-backend'));
@@ -43,10 +47,8 @@ backend.add(import('@backstage/plugin-catalog-backend-module-logs'));
 
 // permission plugin
 backend.add(import('@backstage/plugin-permission-backend'));
-// See https://backstage.io/docs/permissions/getting-started for how to create your own permission policy
-backend.add(
-  import('@backstage/plugin-permission-backend-module-allow-all-policy'),
-);
+// Custom permission policy for catalog MCP tools
+// backend.add(import('./plugins/permissions')); // Disabled in favor of RBAC
 
 // search plugin
 backend.add(import('@backstage/plugin-search-backend'));
@@ -76,5 +78,11 @@ backend.add(
 backend.add(
   import('@backstage-community/plugin-catalog-backend-module-keycloak'),
 );
+
+// GitHub org catalog provider
+backend.add(import('@backstage/plugin-catalog-backend-module-github-org'));
+
+// Custom catalog transformers for unified group management
+backend.add(import('./modules/catalog-transformers'));
 
 backend.start();
