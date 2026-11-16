@@ -24,6 +24,8 @@ import request from 'supertest';
 
 import { iaNotebooksPermission } from '@red-hat-developer-hub/backstage-plugin-intelligent-assistant-common';
 
+import type { Server } from 'node:http';
+
 import {
   LIGHTSPEED_CORE_ADDR,
   lightspeedCoreHandlers,
@@ -34,6 +36,34 @@ import { SessionService } from './sessions/sessionService';
 import { VectorStoresOperator } from './VectorStoresOperator';
 
 const mockUserId = 'user:default/guest';
+
+async function waitUntil(
+  condition: () => boolean,
+  timeoutMs = 2000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() > deadline) {
+      throw new Error(`Condition not met within ${timeoutMs}ms`);
+    }
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+}
+
+// Supertest only closes the server it starts in its `end` callback, which
+// `.abort()` skips, so abort tests run against a server closed here instead.
+async function withListeningServer(
+  app: express.Application,
+  run: (server: Server) => Promise<void>,
+): Promise<void> {
+  const server = app.listen(0);
+  try {
+    await run(server);
+  } finally {
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+  }
+}
 
 describe('Notebooks Router', () => {
   const server = setupServer(...lightspeedCoreHandlers);
@@ -838,6 +868,88 @@ describe('Notebooks Router', () => {
         ...routerLogger.error.mock.calls,
       ];
       expect(JSON.stringify(logCalls)).not.toContain(content);
+    });
+
+    it('should abort the upstream query when the client disconnects before LCS responds', async () => {
+      let markUpstreamStarted: (signal: AbortSignal) => void = () => {};
+      const upstreamStarted = new Promise<AbortSignal>(resolve => {
+        markUpstreamStarted = resolve;
+      });
+      server.use(
+        http.post(
+          `${LIGHTSPEED_CORE_ADDR}/v1/responses`,
+          ({ request: upstreamRequest }) => {
+            markUpstreamStarted(upstreamRequest.signal);
+            // Hold the response headers back until the request is aborted.
+            return new Promise<Response>(resolve => {
+              upstreamRequest.signal.addEventListener('abort', () =>
+                resolve(HttpResponse.error()),
+              );
+            });
+          },
+        ),
+      );
+
+      await withListeningServer(app, async httpServer => {
+        const pending = request(httpServer)
+          .post(`/notebooks/v1/sessions/${sessionId}/query`)
+          .send({ query: 'What is in this notebook?' });
+        pending.end(() => {});
+        const upstreamSignal = await upstreamStarted;
+        pending.abort();
+
+        await waitUntil(() => upstreamSignal.aborted);
+      });
+      expect(routerLogger.warn).toHaveBeenCalledWith(
+        'Client disconnected while processing notebook query',
+      );
+    });
+
+    it('should skip the upstream query when the client disconnects during the session lookup', async () => {
+      let releaseLookup: () => void = () => {};
+      const lookupGate = new Promise<void>(resolve => {
+        releaseLookup = resolve;
+      });
+      const originalFetchSession = SessionService.prototype.fetchSession;
+      const fetchSessionSpy = jest
+        .spyOn(SessionService.prototype, 'fetchSession')
+        .mockImplementation(async function fetchAfterGate(
+          this: SessionService,
+          ...args: Parameters<SessionService['fetchSession']>
+        ) {
+          await lookupGate;
+          return originalFetchSession.apply(this, args);
+        });
+      const responsesHandler = jest.fn(
+        () =>
+          new HttpResponse('data: [DONE]\n\n', {
+            headers: { 'Content-Type': 'text/event-stream' },
+          }),
+      );
+      server.use(
+        http.post(`${LIGHTSPEED_CORE_ADDR}/v1/responses`, responsesHandler),
+      );
+
+      await withListeningServer(app, async httpServer => {
+        const pending = request(httpServer)
+          .post(`/notebooks/v1/sessions/${sessionId}/query`)
+          .send({ query: 'What is in this notebook?' });
+        pending.end(() => {});
+        await waitUntil(() => fetchSessionSpy.mock.calls.length > 0);
+        pending.abort();
+        await waitUntil(() =>
+          routerLogger.warn.mock.calls.some(
+            ([message]) =>
+              message === 'Client disconnected while processing notebook query',
+          ),
+        );
+
+        releaseLookup();
+        await fetchSessionSpy.mock.results[0].value;
+        await new Promise(resolve => setImmediate(resolve));
+      });
+
+      expect(responsesHandler).not.toHaveBeenCalled();
     });
 
     it('should return 404 for non-existing session', async () => {

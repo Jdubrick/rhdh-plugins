@@ -16,6 +16,8 @@
 
 import { LoggerService } from '@backstage/backend-plugin-api';
 
+import type { Response as ExpressResponse } from 'express';
+
 import { DEFAULT_HISTORY_LENGTH, SKIP_USER_ID_ENDPOINTS } from './constant';
 
 /**
@@ -125,4 +127,38 @@ export function rewriteProxyPath(
   }
 
   return newPath;
+}
+
+/**
+ * Calls `onDisconnect` once if the client disconnects before the response
+ * finishes. Register this before awaiting upstream work: a disconnect that
+ * already happened (e.g. while earlier middleware was awaiting) is detected
+ * immediately, since Node does not replay the `close` event.
+ *
+ * @param response - Express response for the current request
+ * @param onDisconnect - Callback that cancels upstream work
+ */
+export function onClientDisconnect(
+  response: ExpressResponse,
+  onDisconnect: () => void,
+): void {
+  if (response.destroyed && !response.writableFinished) {
+    onDisconnect();
+    return;
+  }
+  response.on('close', () => {
+    if (!response.writableFinished) {
+      onDisconnect();
+    }
+  });
+}
+
+/**
+ * Whether `error` is the rejection of a fetch or body read cancelled through
+ * an AbortSignal.
+ *
+ * @param error - The caught error
+ */
+export function isAbortError(error: unknown): boolean {
+  return (error as { name?: unknown } | null)?.name === 'AbortError';
 }

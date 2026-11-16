@@ -14,9 +14,15 @@
  * limitations under the License.
  */
 
+import type { Response as ExpressResponse } from 'express';
+
+import { EventEmitter } from 'node:events';
+
 import { DEFAULT_HISTORY_LENGTH } from './constant';
 import {
   handleLCSFetchError,
+  isAbortError,
+  onClientDisconnect,
   rewriteProxyPath,
   sanitizeLCSError,
 } from './utils';
@@ -275,5 +281,64 @@ describe('rewriteProxyPath', () => {
     );
 
     expect(result).toBe('/v1/saved-prompts/config?foo=bar');
+  });
+});
+
+describe('onClientDisconnect', () => {
+  function createResponse(
+    state: { destroyed?: boolean; writableFinished?: boolean } = {},
+  ) {
+    return Object.assign(new EventEmitter(), {
+      destroyed: false,
+      writableFinished: false,
+      ...state,
+    });
+  }
+
+  it('calls back when the client disconnects before the response finishes', () => {
+    const response = createResponse();
+    const onDisconnect = jest.fn();
+
+    onClientDisconnect(response as unknown as ExpressResponse, onDisconnect);
+    response.emit('close');
+
+    expect(onDisconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not call back when the response finished normally', () => {
+    const response = createResponse();
+    const onDisconnect = jest.fn();
+
+    onClientDisconnect(response as unknown as ExpressResponse, onDisconnect);
+    response.writableFinished = true;
+    response.emit('close');
+
+    expect(onDisconnect).not.toHaveBeenCalled();
+  });
+
+  it('calls back immediately when the client already disconnected', () => {
+    const response = createResponse({ destroyed: true });
+    const onDisconnect = jest.fn();
+
+    onClientDisconnect(response as unknown as ExpressResponse, onDisconnect);
+
+    expect(onDisconnect).toHaveBeenCalledTimes(1);
+    expect(response.listenerCount('close')).toBe(0);
+  });
+});
+
+describe('isAbortError', () => {
+  it('recognizes an aborted fetch', async () => {
+    const error = await fetch('http://127.0.0.1:1', {
+      signal: AbortSignal.abort(),
+    }).catch((e: unknown) => e);
+
+    expect(isAbortError(error)).toBe(true);
+  });
+
+  it('rejects other errors and non-errors', () => {
+    expect(isAbortError(new Error('fetch failed'))).toBe(false);
+    expect(isAbortError(null)).toBe(false);
+    expect(isAbortError('AbortError')).toBe(false);
   });
 });

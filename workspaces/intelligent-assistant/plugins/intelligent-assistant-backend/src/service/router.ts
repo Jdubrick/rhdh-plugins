@@ -63,7 +63,12 @@ import { VectorStoresOperator } from './notebooks/VectorStoresOperator';
 import { userPermissionAuthorization } from './permission';
 import { createTokenEncryptor } from './token-encryption';
 import { QueryRequestBody, RouterOptions } from './types';
-import { handleLCSFetchError, rewriteProxyPath } from './utils';
+import {
+  handleLCSFetchError,
+  isAbortError,
+  onClientDisconnect,
+  rewriteProxyPath,
+} from './utils';
 import {
   validateAttachmentsForModel,
   validateCompletionsRequest,
@@ -935,6 +940,13 @@ export async function createRouter(
     validateAttachmentsForModel,
     async (request, response) => {
       const { provider }: Pick<QueryRequestBody, 'provider'> = request.body;
+      const abortController = new AbortController();
+      let nodeStream: Readable | undefined;
+      onClientDisconnect(response, () => {
+        logger.warn('Client disconnected while processing query');
+        nodeStream?.destroy();
+        abortController.abort();
+      });
       try {
         const { userEntityRef, credentials } = getIdentity(request);
         logger.info(`/v1/query receives call from user: ${userEntityRef}`);
@@ -962,8 +974,9 @@ export async function createRouter(
           userEntityRef,
           { dcrAuth: { authService: auth, credentials }, logger },
         );
-
-        const abortController = new AbortController();
+        if (abortController.signal.aborted) {
+          return;
+        }
 
         const fetchResponse = await fetch(
           `${lcsBaseUrl}/v1/streaming_query?${userQueryParam}`,
@@ -978,6 +991,10 @@ export async function createRouter(
           },
         );
 
+        if (abortController.signal.aborted) {
+          return;
+        }
+
         if (!fetchResponse.ok) {
           await handleLCSFetchError(
             fetchResponse,
@@ -990,7 +1007,7 @@ export async function createRouter(
 
         // Pipe the response back to the original response
         if (fetchResponse.body) {
-          const nodeStream = Readable.fromWeb(fetchResponse.body as any);
+          nodeStream = Readable.fromWeb(fetchResponse.body as any);
 
           nodeStream.on('error', (error: Error) => {
             logger.error(
@@ -1004,17 +1021,13 @@ export async function createRouter(
             abortController.abort();
           });
 
-          response.on('close', () => {
-            if (!response.writableFinished) {
-              logger.warn('Client disconnected while processing query');
-              nodeStream.destroy();
-              abortController.abort();
-            }
-          });
-
           nodeStream.pipe(response);
         }
       } catch (error) {
+        if (abortController.signal.aborted && isAbortError(error)) {
+          // The client already left; there is no one to send an error to.
+          return;
+        }
         const errormsg = `Error fetching completions from ${provider}: ${error}`;
         logger.error(errormsg);
         response.status(500).json({ error: errormsg });

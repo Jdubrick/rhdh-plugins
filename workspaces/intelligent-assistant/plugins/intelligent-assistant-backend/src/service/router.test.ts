@@ -1791,6 +1791,53 @@ describe('intelligent-assistant router tests', () => {
     });
   });
 
+  describe('POST /v1/query client disconnect', () => {
+    it('aborts the upstream request when the client disconnects before LCS responds', async () => {
+      const backendServer = await startBackendServer();
+      let markUpstreamStarted: (signal: AbortSignal) => void = () => {};
+      const upstreamStarted = new Promise<AbortSignal>(resolve => {
+        markUpstreamStarted = resolve;
+      });
+      server.use(
+        http.post(
+          `${LOCAL_LCS_ADDR}/v1/streaming_query`,
+          ({ request: upstreamRequest }) => {
+            markUpstreamStarted(upstreamRequest.signal);
+            // Hold the response headers back until the request is aborted.
+            return new Promise<Response>(resolve => {
+              upstreamRequest.signal.addEventListener('abort', () =>
+                resolve(HttpResponse.error()),
+              );
+            });
+          },
+        ),
+      );
+
+      const pending = request(backendServer)
+        .post('/api/intelligent-assistant/v1/query')
+        .send({ model: mockModel, provider: 'test-server', query: 'Hello' });
+      pending.end(() => {});
+      const upstreamSignal = await upstreamStarted;
+      pending.abort();
+
+      let timer: NodeJS.Timeout | undefined;
+      const aborted = await Promise.race([
+        new Promise<boolean>(resolve => {
+          if (upstreamSignal.aborted) {
+            resolve(true);
+          } else {
+            upstreamSignal.addEventListener('abort', () => resolve(true));
+          }
+        }),
+        new Promise<boolean>(resolve => {
+          timer = setTimeout(() => resolve(false), 2000);
+        }),
+      ]);
+      clearTimeout(timer);
+      expect(aborted).toBe(true);
+    });
+  });
+
   // Locks in the 500 contract when the permission service itself fails
   // (e.g. network error) as opposed to a deliberate DENY. Ensures the
   // middleware responds with a generic error rather than leaking internals.

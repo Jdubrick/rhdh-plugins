@@ -46,6 +46,7 @@ import {
   getIdentity,
 } from '../middleware/getIdentity';
 import { userPermissionAuthorization } from '../permission';
+import { isAbortError, onClientDisconnect } from '../utils';
 import { isValidFileType } from './documents/documentHelpers';
 import { DocumentService } from './documents/documentService';
 import { convertToMarkdown } from './documents/markitdownClient';
@@ -532,7 +533,27 @@ export async function createNotebooksRouter(
         return;
       }
 
+      const abortController = new AbortController();
+      let body: Readable | undefined;
+      let transformStream: Transform | undefined;
+      onClientDisconnect(res, () => {
+        logger.warn('Client disconnected while processing notebook query');
+        abortController.abort();
+        body?.destroy();
+        transformStream?.destroy();
+      });
+      // The client already left; there is no one to send an error to.
+      const ignoreClientAbort = (error: unknown): undefined => {
+        if (abortController.signal.aborted && isAbortError(error)) {
+          return undefined;
+        }
+        throw error;
+      };
+
       const { session } = await sessionService.fetchSession(sessionId, userId);
+      if (abortController.signal.aborted) {
+        return;
+      }
       let conversationId = session.metadata?.conversation_id;
 
       const lcsRequest: any = {
@@ -549,8 +570,6 @@ export async function createNotebooksRouter(
       };
 
       for (let retries = 0; retries <= MAX_QUERY_RETRIES; retries++) {
-        const abortController = new AbortController();
-
         const response = await fetch(
           `${lcsBaseUrl}/v1/responses?user_id=${encodeURIComponent(userId)}`,
           {
@@ -559,7 +578,10 @@ export async function createNotebooksRouter(
             body: JSON.stringify(lcsRequest),
             signal: abortController.signal,
           },
-        );
+        ).catch(ignoreClientAbort);
+        if (!response || abortController.signal.aborted) {
+          return;
+        }
 
         // Retry once if conversation not found (orphaned from interrupted query)
         if (
@@ -585,7 +607,12 @@ export async function createNotebooksRouter(
         }
 
         if (!response.ok) {
-          const errorBody = (await response.json()) as any;
+          const errorBody = (await response
+            .json()
+            .catch(ignoreClientAbort)) as any;
+          if (abortController.signal.aborted) {
+            return;
+          }
           const errorMsg =
             errorBody?.detail?.[0]?.msg ||
             errorBody?.detail?.cause ||
@@ -602,14 +629,16 @@ export async function createNotebooksRouter(
         }
 
         if (response.body) {
-          const body = Readable.fromWeb(response.body as any);
-          const transformStream = createResponsesApiTransform(
+          const upstream = Readable.fromWeb(response.body as any);
+          const transform = createResponsesApiTransform(
             session,
             sessionId,
             userId,
           );
+          body = upstream;
+          transformStream = transform;
 
-          body.on('error', (error: Error) => {
+          upstream.on('error', (error: Error) => {
             logger.error(
               `Upstream stream error while processing notebook query: ${error}`,
             );
@@ -621,10 +650,10 @@ export async function createNotebooksRouter(
                 .json({ status: 'error', error: 'Stream error occurred' });
             }
             abortController.abort();
-            transformStream.destroy();
+            transform.destroy();
           });
 
-          transformStream.on('error', (error: Error) => {
+          transform.on('error', (error: Error) => {
             logger.error(
               `Transform stream error while processing notebook query: ${error}`,
             );
@@ -636,22 +665,11 @@ export async function createNotebooksRouter(
                 error: 'Processing error occurred',
               });
             }
-            body.destroy();
+            upstream.destroy();
             abortController.abort();
           });
 
-          res.on('close', () => {
-            if (!res.writableFinished) {
-              logger.warn(
-                'Client disconnected while processing notebook query',
-              );
-              abortController.abort();
-              body.destroy();
-              transformStream.destroy();
-            }
-          });
-
-          body.pipe(transformStream).pipe(res);
+          upstream.pipe(transform).pipe(res);
         }
         break;
       }
